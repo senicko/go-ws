@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 
@@ -12,8 +13,26 @@ import (
 func main() {
 	mux := http.NewServeMux()
 
+	upgrader := ws.Upgrader{}
+
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		ws.Upgrade(w, r)
+		conn, err := upgrader.Upgrade(w, r)
+
+		if err != nil {
+			log.Println(err)
+			return
+		}
+
+		buf := make([]byte, 4096)
+
+		for {
+			if _, err := conn.Conn.Read(buf); err != nil {
+				fmt.Println("failed to read from the client")
+				continue
+			}
+
+			fmt.Println("received some data!", string(buf))
+		}
 	})
 
 	if err := http.ListenAndServe(":8080", mux); err != nil {

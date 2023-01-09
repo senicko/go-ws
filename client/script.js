@@ -6,6 +6,8 @@ socket.addEventListener("error", (event) => {
 
 socket.addEventListener("open", () => {
   console.log("Connection has been succesfully opened");
+
+  socket.send("Hello from the browser!");
 });
 
 socket.addEventListener("close", (event) => {
