@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 )
@@ -37,13 +36,13 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 
 	if u.CheckOrigin != nil && !u.CheckOrigin(r) {
 		handleError(w, http.StatusForbidden)
-		return nil, fmt.Errorf("client's origin is not acceptable")
+		return nil, fmt.Errorf("client's origin validation failed: %w", ErrUpgradeFailed)
 	}
 
 	key := r.Header.Get("Sec-WebSocket-Key")
 	if key == "" {
 		handleError(w, http.StatusBadRequest)
-		return nil, fmt.Errorf("'Sec-WebSocket-Key' missing")
+		return nil, fmt.Errorf("'Sec-WebSocket-Key' header missing: %w", ErrUpgradeFailed)
 	}
 
 	protocol := u.resolveSubprotocol(r)
@@ -138,7 +137,6 @@ func (u *Upgrader) checkHandshake(r *http.Request) (error, int) {
 func (u *Upgrader) generateAcceptKey(key string) string {
 	// FIXME: It is stated that SHA-1 is cryptographically broken and shouldn't be used (?)
 	// https://pkg.go.dev/crypto/sha1@go1.19.4
-
 	h := sha1.New()
 	io.WriteString(h, key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
@@ -156,14 +154,4 @@ func (u *Upgrader) checkForHeader(r *http.Request, h, v string) error {
 // handleError sends and HTTP error to the client and logs debug message if present.
 func handleError(w http.ResponseWriter, s int) {
 	http.Error(w, http.StatusText(s), s)
-}
-
-type Conn struct {
-	Conn net.Conn
-}
-
-func newConn(conn net.Conn, readBufferSize int, writeBufferSize int) *Conn {
-	return &Conn{
-		Conn: conn,
-	}
 }

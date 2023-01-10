@@ -23,15 +23,9 @@ func main() {
 			return
 		}
 
-		buf := make([]byte, 4096)
-
 		for {
-			if _, err := conn.Conn.Read(buf); err != nil {
-				fmt.Println("failed to read from the client")
-				continue
-			}
-
-			fmt.Println("received some data!", string(buf))
+			m := conn.Message()
+			fmt.Printf("received message: %s\n", m)
 		}
 	})
 
