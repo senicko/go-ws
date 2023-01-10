@@ -24,8 +24,8 @@ func main() {
 		}
 
 		for {
-			m := conn.Message()
-			fmt.Printf("received message: %s\n", m)
+			m := conn.ReadMessage()
+			fmt.Printf("%s\n", m)
 		}
 	})
 
