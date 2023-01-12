@@ -24,7 +24,12 @@ func main() {
 		}
 
 		for {
-			m := conn.ReadMessage()
+			m, err := conn.ReadMessage()
+			if err != nil {
+				fmt.Printf("error: %v", err)
+				continue
+			}
+
 			fmt.Printf("%s\n", m)
 		}
 	})
