@@ -17,6 +17,7 @@ func main() {
 
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r)
+		defer conn.Close()
 
 		if err != nil {
 			log.Println(err)
@@ -24,13 +25,13 @@ func main() {
 		}
 
 		for {
-			m, err := conn.ReadMessage()
+			message, err := conn.ReadMessage()
 			if err != nil {
-				fmt.Printf("error: %v", err)
-				continue
+				fmt.Println("read failed:", err)
+				break
 			}
 
-			fmt.Printf("%s\n", m)
+			conn.SendMessage(ws.TextFrame, message)
 		}
 	})
 

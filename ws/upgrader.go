@@ -47,7 +47,7 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 
 	protocol := u.resolveSubprotocol(r)
 
-	// FIXME: Probably we should validate more things
+	// TODO: Probably we should validate more things
 	// https://www.rfc-editor.org/rfc/rfc6455#section-4.1
 
 	hj, ok := w.(http.Hijacker)

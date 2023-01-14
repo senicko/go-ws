@@ -1,13 +1,19 @@
 const socket = new WebSocket("ws://localhost:8080/ws");
+window.socket = socket;
+
+const button = document.querySelector("#send-button");
+const message = document.querySelector("#message");
 
 socket.addEventListener("error", (event) => {
   console.log(event);
 });
 
 socket.addEventListener("open", () => {
-  console.log("Connection has been succesfully opened");
+  console.log("event register");
 
-  socket.send("Hello from the browser!");
+  button.addEventListener("click", () => {
+    socket.send(message.value);
+  });
 });
 
 socket.addEventListener("close", (event) => {
