@@ -3,9 +3,11 @@ package ws
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 )
 
 const (
@@ -20,34 +22,93 @@ const (
 )
 
 const (
-	TextFrame            = 1
-	BinaryFrame          = 2
-	ConnectionCloseFrame = 8
-	PingFrame            = 9
-	PongFrame            = 10
+	OpText   = 1
+	OpBinary = 2
+	OpClose  = 8
+	OpPing   = 9
+	OpPong   = 10
 )
+
+// WebSocket connection close status codes.
+// https://www.rfc-editor.org/rfc/rfc6455#section-11.7
+const (
+	CloseStatusNoStatusReceived uint16 = 1005
+)
+
+var (
+	ErrProtocolError    = errors.New("invalid frame structure")
+	ErrConnectionClosed = errors.New("connection has been closed")
+)
+
+// frame represents decoded WebSocket frame.
+// https://www.rfc-editor.org/rfc/rfc6455#section-5.2
+type frame struct {
+	fin           bool
+	rsv1          bool
+	rsv2          bool
+	rsv3          bool
+	opcode        uint8
+	mask          bool
+	payloadLength uint64
+	maskingKey    []byte
+	payload       []byte
+}
+
+// unmaskPayload returns unmasked payload.
+func (f *frame) unmaskPayload() []byte {
+	var transformed []byte
+
+	for i, b := range f.payload {
+		transformed = append(transformed, b^f.maskingKey[i%4])
+	}
+
+	return transformed
+}
+
+// validate returns error when frame structure does not fit it's type.
+// The returned error wraps ErrProtocolError.
+func (f *frame) validate() error {
+	var errors []string
+
+	switch f.opcode {
+	case OpClose, OpPing, OpPong:
+		if f.payloadLength > 125 {
+			errors = append(errors, "control frame payload length must be <= 125")
+		}
+
+		if !f.fin {
+			errors = append(errors, "control frame FIN not set to 1")
+		}
+	case OpText, OpBinary:
+		// TODO: Validate for final read when fragmentation will be supported
+	default:
+		errors = append(errors, "unknown opcode")
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("%s: %w", strings.Join(errors, ","), ErrProtocolError)
+	}
+
+	return nil
+}
 
 // Conn represents a WebSocket connection.
 type Conn struct {
-	conn   net.Conn
-	reader *bufio.Reader
-	writer *bufio.Writer
+	conn     net.Conn
+	reader   *bufio.Reader
+	writeBuf []byte
 }
 
 // newConn returns a new Conn.
 func newConn(conn net.Conn, readBufferSize int, writeBufferSize int) *Conn {
-	// TODO: use readBufferSize and writeBufferSize
-	reader := bufio.NewReaderSize(conn, 1024)
-	writer := bufio.NewWriterSize(conn, 1024)
-
 	return &Conn{
-		conn:   conn,
-		reader: reader,
-		writer: writer,
+		conn:     conn,
+		reader:   bufio.NewReaderSize(conn, readBufferSize),
+		writeBuf: make([]byte, writeBufferSize),
 	}
 }
 
-// Close closes the websocket connection.
+// Close closes the WebSocket's TCP connection.
 func (c *Conn) Close() {
 	c.conn.Close()
 }
@@ -55,13 +116,55 @@ func (c *Conn) Close() {
 // ReadMessage returns payload from inoming WebSocket frame.
 func (c *Conn) ReadMessage() ([]byte, error) {
 	frame, err := c.decodeFrame()
-	fmt.Printf("%+v\n", frame)
-
 	if err != nil {
 		return nil, err
 	}
 
-	return c.unmaskTextPayload(frame.maskingKey, frame.payload), nil
+	payload := frame.unmaskPayload()
+
+	// Validate frame structure
+	if err := frame.validate(); err != nil {
+		return nil, fmt.Errorf("frame validation failed: %w", err)
+	}
+
+	fmt.Printf("(read)%+v\n", frame)
+
+	switch frame.opcode {
+	case OpText, OpBinary:
+		return frame.unmaskPayload(), nil
+	case OpClose:
+		statusCode := CloseStatusNoStatusReceived
+		reason := ""
+
+		if frame.payloadLength > 0 {
+			statusCode = binary.BigEndian.Uint16(payload)
+			reason = string(payload[2:])
+		}
+
+		if err := c.handleClose(statusCode, reason); err != nil {
+			return nil, err
+		}
+
+		return nil, ErrConnectionClosed
+	}
+
+	return nil, nil
+}
+
+// handleClose sends the close frame to the client in order to finish
+// the close procedure.
+func (c *Conn) handleClose(statusCode uint16, reason string) error {
+	var buf []byte
+
+	if statusCode != CloseStatusNoStatusReceived {
+		buf = binary.BigEndian.AppendUint16(buf, statusCode)
+	}
+
+	if err := c.WriteMessage(OpClose, buf); err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
+	}
+
+	return nil
 }
 
 // advanceBytes returns n next bytes from client's message.
@@ -75,20 +178,6 @@ func (c *Conn) advanceBytes(n uint64) ([]byte, error) {
 	return b, nil
 }
 
-// frame represents decoded WebSocket frame.
-// https://www.rfc-editor.org/rfc/rfc6455#section-5.2
-type frame struct {
-	fin           bool
-	rsv1          bool
-	rsv2          bool
-	rsv3          bool
-	opcode        int
-	mask          bool
-	payloadLength uint64
-	maskingKey    []byte
-	payload       []byte
-}
-
 // decodeFrame returns an incoming WebSocket frame.
 func (c *Conn) decodeFrame() (*frame, error) {
 	b, err := c.advanceBytes(2)
@@ -100,7 +189,7 @@ func (c *Conn) decodeFrame() (*frame, error) {
 	rsv1 := b[0]&bitRsv1 != 0
 	rsv2 := b[0]&bitRsv2 != 0
 	rsv3 := b[0]&bitRsv3 != 0
-	opcode := int(b[0] & 0xf)
+	opcode := uint8(b[0] & 0xf)
 	mask := b[1]&bitMask != 0
 
 	payloadLength, err := c.getPayloadLength(b[1])
@@ -120,6 +209,8 @@ func (c *Conn) decodeFrame() (*frame, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// TODO: payload unmasking may be implemented here?
 
 	return &frame{
 		fin:           fin,
@@ -158,32 +249,31 @@ func (c *Conn) getPayloadLength(b byte) (uint64, error) {
 	return len, nil
 }
 
-// unmaskTextPayload unmasks the payload.
-func (c *Conn) unmaskTextPayload(mask, payload []byte) []byte {
-	var transformed []byte
+// WriteMessage sends message to the client.
+func (c *Conn) WriteMessage(opcode uint8, payload []byte) error {
+	frame := make([]byte, 2)
 
-	for i, b := range payload {
-		transformed = append(transformed, b^mask[i%4])
-	}
+	frame[0] |= opcode
+	frame[0] |= bitFin
 
-	return transformed
-}
+	payloadLen := len(payload)
 
-// SendMessage sends message to the client.
-func (c *Conn) SendMessage(opcode int, data []byte) {
-	b0 := byte(opcode)
-	b0 |= bitFin
-
-	var b1 byte
-	if len(data) < 126 {
-		b1 = byte(len(data))
-	} else if len(data) < 0xFFFF {
-		b1 = 126
+	if payloadLen < 126 {
+		frame[1] |= byte(payloadLen)
+	} else if payloadLen <= 0xFFFF {
+		frame[1] |= 126
+		binary.BigEndian.PutUint16(frame, uint16(payloadLen))
 	} else {
-		b1 = 127
+		frame[1] |= 127
+		binary.BigEndian.PutUint64(frame, uint64(payloadLen))
 	}
 
-	c.writer.Write([]byte{b0, b1})
-	c.writer.Write(data)
-	c.writer.Flush()
+	frame = append(frame, payload...)
+
+	fmt.Printf("(write) opCode: %d, \n%08b\n", opcode, frame)
+	if _, err := c.conn.Write(frame); err != nil {
+		return fmt.Errorf("failed to write: %w", err)
+	}
+
+	return nil
 }

@@ -31,7 +31,9 @@ func main() {
 				break
 			}
 
-			conn.SendMessage(ws.TextFrame, message)
+			if err := conn.WriteMessage(ws.OpText, message); err != nil {
+				fmt.Println("failed to send the message:", err)
+			}
 		}
 	})
 
