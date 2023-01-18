@@ -252,10 +252,8 @@ func (c *Conn) getPayloadLength(b byte) (uint64, error) {
 // WriteMessage sends message to the client.
 func (c *Conn) WriteMessage(opcode uint8, payload []byte) error {
 	frame := make([]byte, 2)
-
 	frame[0] |= opcode
 	frame[0] |= bitFin
-
 	payloadLen := len(payload)
 
 	if payloadLen < 126 {
