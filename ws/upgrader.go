@@ -96,7 +96,7 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 		return nil, fmt.Errorf("failed to write to connection: %w", err)
 	}
 
-	return newConn(conn, u.ReadBufferSize, u.WriteBufferSize), nil
+	return NewConn(conn, u.ReadBufferSize, u.WriteBufferSize), nil
 }
 
 // resolveSubprotocol finds subprotocol that satisfies both server and the client.
