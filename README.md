@@ -31,6 +31,6 @@ Current goal is to fully and correctly support upgrading and closing the connect
 - [ ] Add support for different opcodes
 - [ ] Closing the connection (make sure that it works as expected)
 - [ ] Working with buffers (need to do more reaserch on that. How, when and if should I use them for reading / writing data)
-- [ ] Fragmentation (only not fragmented frames are supported right now)
+- [x] Fragmentation (only not fragmented frames are supported right now)
 
 I hope this todo list will become clearer with time as I'll understand each part more deeply.
