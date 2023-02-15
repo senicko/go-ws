@@ -2,6 +2,8 @@ package ws
 
 import (
 	"bufio"
+	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -42,8 +44,6 @@ var (
 	ErrConnectionClosed = errors.New("connection has been closed")
 )
 
-// utils
-
 // applyMask is a util for masking the payload.
 // The algorithm for masking and unmasking is the same
 // as mentioned in https://www.rfc-editor.org/rfc/rfc6455#section-5.3
@@ -56,8 +56,6 @@ func applyMask(b, maskingKey []byte) []byte {
 
 	return transformed
 }
-
-// frame
 
 // frame represents decoded WebSocket frame.
 // https://www.rfc-editor.org/rfc/rfc6455#section-5.2
@@ -99,22 +97,20 @@ func (f *frame) validate() error {
 	return nil
 }
 
-// conn
-
 // Conn represents a WebSocket connection.
 type Conn struct {
-	conn net.Conn
+	conn        net.Conn
+	compression bool
 
 	// writing
 	writeBuf []byte
 
 	// reading
-	reader     *bufio.Reader
-	messageBuf []byte
+	reader *bufio.Reader
 }
 
 // NewConn returns a new Conn.
-func NewConn(conn net.Conn, readBufferSize int, writeBufferSize int) *Conn {
+func newConn(conn net.Conn, readBufferSize int, writeBufferSize int) *Conn {
 	return &Conn{
 		conn:     conn,
 		reader:   bufio.NewReaderSize(conn, readBufferSize),
@@ -129,6 +125,9 @@ func (c *Conn) Close() {
 
 // ReadMessage returns payload from inoming WebSocket frame.
 func (c *Conn) ReadMessage() ([]byte, error) {
+	decompressMessage := false
+	messageBuf := []byte{}
+
 	for {
 		f, err := c.nextFrame()
 		if err != nil {
@@ -139,17 +138,51 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 			return nil, fmt.Errorf("frame validation failed: %w", err)
 		}
 
-		fmt.Printf("(read)%+v\n", f)
-
 		switch f.opcode {
 		case OpText, OpBinary:
-			if f.fin {
-				fullPayload := append(c.messageBuf, f.unmaskedPayload...)
-				c.messageBuf = []byte{}
-				return fullPayload, nil
-			}
+			if !c.compression {
+				if !f.fin {
+					messageBuf = append(messageBuf, f.unmaskedPayload...)
+					continue
+				}
 
-			c.messageBuf = append(c.messageBuf, f.unmaskedPayload...)
+				return append(messageBuf, f.unmaskedPayload...), nil
+			} else {
+				// TODO: Handle error when rsv1 is set but decompressMessage is already true (duplicate rsv1)
+				// TODO: Handle error when rsv2 and rsv3 are set
+
+				if f.rsv1 && !decompressMessage {
+					decompressMessage = true
+				}
+
+				if !f.fin {
+					messageBuf = append(messageBuf, f.unmaskedPayload...)
+					continue
+				}
+
+				fullPayload := append(messageBuf, f.unmaskedPayload...)
+
+				if !decompressMessage {
+					return fullPayload, nil
+				}
+
+				tail := bytes.NewReader([]byte{
+					// https://www.rfc-editor.org/rfc/rfc7692.html#section-7.2.2
+					0x00, 0x00, 0x11, 0x11,
+					// Add final block to supress unexpected EOF error from flate.Reader
+					0x01, 0x00, 0x00, 0x11, 0x11,
+				})
+
+				fr := flate.NewReader(io.MultiReader(bytes.NewReader(fullPayload), tail))
+				defer fr.Close()
+
+				decompressed, err := io.ReadAll(fr)
+				if err != nil {
+					return nil, fmt.Errorf("failed to decompress the message: %w", err)
+				}
+
+				return decompressed, nil
+			}
 		case OpClose:
 			statusCode := CloseStatusNoStatusReceived
 			reason := ""
@@ -203,7 +236,7 @@ func (c *Conn) getPayloadLength(b byte) (uint64, error) {
 	return len, nil
 }
 
-// decodeFrame returns an incoming WebSocket frame.
+// nextFrame returns an incoming WebSocket frame.
 func (c *Conn) nextFrame() (*frame, error) {
 	b, err := c.advanceBytes(2)
 	if err != nil {

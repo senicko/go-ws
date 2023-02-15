@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"fmt"
@@ -25,7 +26,11 @@ func TestReadUnfragmentedTextMessage(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 
-	ws := NewConn(server, 1024, 1024)
+	ws := Conn{
+		conn:     server,
+		reader:   bufio.NewReaderSize(server, 1024),
+		writeBuf: make([]byte, 1024),
+	}
 	defer ws.Close()
 
 	payload := []byte("test")
@@ -58,7 +63,11 @@ func TestReadFragmentedTextMessage(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
 
-	ws := NewConn(server, 1024, 1024)
+	ws := Conn{
+		conn:     server,
+		reader:   bufio.NewReaderSize(server, 1024),
+		writeBuf: make([]byte, 1024),
+	}
 	defer ws.Close()
 
 	payload := []byte("test")

@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"encoding/base64"
@@ -28,7 +29,6 @@ type Upgrader struct {
 // Upgrade upgrades the HTTP connection to use the WebSocket protocol.
 func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 	// Validate handshake
-
 	if err, s := u.checkHandshake(r); err != nil {
 		handleError(w, s)
 		return nil, err
@@ -46,6 +46,7 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 	}
 
 	protocol := u.resolveSubprotocol(r)
+	exts := u.getExtentions(r)
 
 	// TODO: Probably we should validate more things
 	// https://www.rfc-editor.org/rfc/rfc6455#section-4.1
@@ -67,12 +68,19 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 		return nil, fmt.Errorf("data send after opening handshake")
 	}
 
-	// Send response
-
+	// Construct response
 	resHeaders := http.Header{}
 	resHeaders.Set("Upgrade", "websocket")
 	resHeaders.Set("Connection", "Upgrade")
 	resHeaders.Set("Sec-WebSocket-Accept", u.generateAcceptKey(key))
+
+	// Negotiate extensions
+	compression := false
+
+	if _, ok := exts["permessage-deflate"]; ok {
+		resHeaders.Set("Sec-Websocket-Extensions", "permessage-deflate")
+		compression = true
+	}
 
 	if protocol != "" {
 		resHeaders.Set("Sec-WebSocket-Prococol", protocol)
@@ -96,7 +104,42 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 		return nil, fmt.Errorf("failed to write to connection: %w", err)
 	}
 
-	return NewConn(conn, u.ReadBufferSize, u.WriteBufferSize), nil
+	return &Conn{
+		conn:        conn,
+		reader:      bufio.NewReaderSize(conn, u.ReadBufferSize),
+		writeBuf:    make([]byte, u.WriteBufferSize),
+		compression: compression,
+	}, nil
+}
+
+type Extension struct {
+	Token  string
+	Params []string
+}
+
+// getExtentions retrieves extensions from the upgrade request.
+func (u *Upgrader) getExtentions(r *http.Request) map[string]Extension {
+	exts := map[string]Extension{}
+
+	for _, ext := range strings.Split(r.Header.Get("Sec-Websocket-Extensions"), ",") {
+		parts := strings.Split(ext, ";")
+		token := parts[0]
+
+		// For now don't check other options of configuration for a specific ext
+		// https://www.rfc-editor.org/rfc/rfc7692#section-6
+		if _, ok := exts[token]; ok {
+			continue
+		}
+
+		params := parts[1:]
+
+		exts[token] = Extension{
+			Token:  token,
+			Params: params,
+		}
+	}
+
+	return exts
 }
 
 // resolveSubprotocol finds subprotocol that satisfies both server and the client.
