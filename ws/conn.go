@@ -2,8 +2,6 @@ package ws
 
 import (
 	"bufio"
-	"bytes"
-	"compress/flate"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -60,14 +58,14 @@ func applyMask(b, maskingKey []byte) []byte {
 // frame represents decoded WebSocket frame.
 // https://www.rfc-editor.org/rfc/rfc6455#section-5.2
 type frame struct {
-	fin             bool
-	rsv1            bool
-	rsv2            bool
-	rsv3            bool
-	opcode          uint8
-	mask            bool
-	payloadLength   uint64
-	unmaskedPayload []byte
+	fin           bool
+	rsv1          bool
+	rsv2          bool
+	rsv3          bool
+	opcode        uint8
+	mask          bool
+	payloadLength uint64
+	payload       []byte
 }
 
 // validate returns error when frame structure does not fit it's type.
@@ -101,12 +99,8 @@ func (f *frame) validate() error {
 type Conn struct {
 	conn        net.Conn
 	compression bool
-
-	// writing
-	writeBuf []byte
-
-	// reading
-	reader *bufio.Reader
+	writeBuf    []byte
+	reader      *bufio.Reader
 }
 
 // NewConn returns a new Conn.
@@ -125,8 +119,8 @@ func (c *Conn) Close() {
 
 // ReadMessage returns payload from inoming WebSocket frame.
 func (c *Conn) ReadMessage() ([]byte, error) {
-	decompressMessage := false
-	messageBuf := []byte{}
+	compressed := false
+	buf := []byte{}
 
 	for {
 		f, err := c.nextFrame()
@@ -134,169 +128,31 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 			return nil, err
 		}
 
-		if err := f.validate(); err != nil {
-			return nil, fmt.Errorf("frame validation failed: %w", err)
+		if !f.fin {
+			buf = append(buf, f.payload...)
+			continue
 		}
 
-		switch f.opcode {
-		case OpText, OpBinary:
-			if !c.compression {
-				if !f.fin {
-					messageBuf = append(messageBuf, f.unmaskedPayload...)
-					continue
-				}
-
-				return append(messageBuf, f.unmaskedPayload...), nil
+		if f.rsv1 {
+			if !compressed {
+				compressed = true
 			} else {
-				// TODO: Handle error when rsv1 is set but decompressMessage is already true (duplicate rsv1)
-				// TODO: Handle error when rsv2 and rsv3 are set
-
-				if f.rsv1 && !decompressMessage {
-					decompressMessage = true
-				}
-
-				if !f.fin {
-					messageBuf = append(messageBuf, f.unmaskedPayload...)
-					continue
-				}
-
-				fullPayload := append(messageBuf, f.unmaskedPayload...)
-
-				if !decompressMessage {
-					return fullPayload, nil
-				}
-
-				tail := bytes.NewReader([]byte{
-					// https://www.rfc-editor.org/rfc/rfc7692.html#section-7.2.2
-					0x00, 0x00, 0x11, 0x11,
-					// Add final block to supress unexpected EOF error from flate.Reader
-					0x01, 0x00, 0x00, 0x11, 0x11,
-				})
-
-				fr := flate.NewReader(io.MultiReader(bytes.NewReader(fullPayload), tail))
-				defer fr.Close()
-
-				decompressed, err := io.ReadAll(fr)
-				if err != nil {
-					return nil, fmt.Errorf("failed to decompress the message: %w", err)
-				}
-
-				return decompressed, nil
-			}
-		case OpClose:
-			statusCode := CloseStatusNoStatusReceived
-			reason := ""
-
-			if f.payloadLength > 0 {
-				statusCode = binary.BigEndian.Uint16(f.unmaskedPayload)
-				reason = string(f.unmaskedPayload[2:])
-			}
-
-			if err := c.handleClose(statusCode, reason); err != nil {
+				// TODO: What should happen when RSV1 is repeated?
 				return nil, err
 			}
-
-			return nil, ErrConnectionClosed
-		}
-	}
-}
-
-// advanceBytes returns n next bytes from client's message.
-func (c *Conn) advanceBytes(n uint64) ([]byte, error) {
-	b := make([]byte, n)
-
-	if _, err := io.ReadFull(c.reader, b); err != nil {
-		return nil, err
-	}
-
-	return b, nil
-}
-
-// getPayloadLength returns the frame's payload length.
-// b must be the second byte of WebSocket frame.
-func (c *Conn) getPayloadLength(b byte) (uint64, error) {
-	len := uint64(b & 0x7f)
-
-	if len == 126 {
-		b, err := c.advanceBytes(2)
-		if err != nil {
-			return 0, err
 		}
 
-		len = uint64(binary.BigEndian.Uint16(b))
-	} else if len == 127 {
-		b, err := c.advanceBytes(8)
-		if err != nil {
-			return 0, err
+		m := append(buf, f.payload...)
+
+		if compressed {
+			m, err = decompress(m)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decompress the message: %w", err)
+			}
 		}
 
-		len = binary.BigEndian.Uint64(b)
+		return m, nil
 	}
-
-	return len, nil
-}
-
-// nextFrame returns an incoming WebSocket frame.
-func (c *Conn) nextFrame() (*frame, error) {
-	b, err := c.advanceBytes(2)
-	if err != nil {
-		return nil, err
-	}
-
-	fin := b[0]&bitFin != 0
-	rsv1 := b[0]&bitRsv1 != 0
-	rsv2 := b[0]&bitRsv2 != 0
-	rsv3 := b[0]&bitRsv3 != 0
-	opcode := uint8(b[0] & 0xf)
-	mask := b[1]&bitMask != 0
-
-	if !mask {
-		return nil, fmt.Errorf("frame not masked: %w", ErrProtocolError)
-	}
-
-	payloadLength, err := c.getPayloadLength(b[1])
-	if err != nil {
-		return nil, err
-	}
-
-	maskingKey, err := c.advanceBytes(4)
-	if err != nil {
-		return nil, err
-	}
-
-	payload, err := c.advanceBytes(payloadLength)
-	if err != nil {
-		return nil, err
-	}
-
-	unmaskedPayload := applyMask(payload, maskingKey)
-
-	return &frame{
-		fin:             fin,
-		rsv1:            rsv1,
-		rsv2:            rsv2,
-		rsv3:            rsv3,
-		opcode:          opcode,
-		mask:            mask,
-		payloadLength:   payloadLength,
-		unmaskedPayload: unmaskedPayload,
-	}, nil
-}
-
-// handleClose sends the close frame to the client in order to finish
-// the close procedure.
-func (c *Conn) handleClose(statusCode uint16, reason string) error {
-	var buf []byte
-
-	if statusCode != CloseStatusNoStatusReceived {
-		buf = binary.BigEndian.AppendUint16(buf, statusCode)
-	}
-
-	if err := c.WriteMessage(OpClose, buf); err != nil {
-		return fmt.Errorf("failed to write message: %w", err)
-	}
-
-	return nil
 }
 
 // WriteMessage sends message to the client.
@@ -321,6 +177,124 @@ func (c *Conn) WriteMessage(opcode uint8, payload []byte) error {
 	fmt.Printf("(write) opCode: %d, \n%08b\n", opcode, frame)
 	if _, err := c.conn.Write(frame); err != nil {
 		return fmt.Errorf("failed to write: %w", err)
+	}
+
+	return nil
+}
+
+// advanceBytes returns n next bytes from client's message.
+func (c *Conn) advanceBytes(n uint64) ([]byte, error) {
+	b := make([]byte, n)
+
+	if _, err := io.ReadFull(c.reader, b); err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
+
+// nextFrame returns next message frames (OpText, OpBinary).
+// It intercepts control frames, which are processed seperately
+// and returns nil.
+func (c *Conn) nextFrame() (*frame, error) {
+	b, err := c.advanceBytes(2)
+	if err != nil {
+		return nil, err
+	}
+
+	fin := b[0]&bitFin != 0
+	rsv1 := b[0]&bitRsv1 != 0
+	rsv2 := b[0]&bitRsv2 != 0
+	rsv3 := b[0]&bitRsv3 != 0
+	opcode := uint8(b[0] & 0xf)
+	mask := b[1]&bitMask != 0
+
+	if !mask {
+		return nil, fmt.Errorf("frame not masked: %w", ErrProtocolError)
+	}
+
+	payloadLength := uint64(b[1] & 0x7f)
+
+	if payloadLength == 126 {
+		b, err := c.advanceBytes(2)
+		if err != nil {
+			return nil, err
+		}
+
+		payloadLength = uint64(binary.BigEndian.Uint16(b))
+	} else if payloadLength == 127 {
+		b, err := c.advanceBytes(8)
+		if err != nil {
+			return nil, err
+		}
+
+		payloadLength = binary.BigEndian.Uint64(b)
+	}
+
+	maskingKey, err := c.advanceBytes(4)
+	if err != nil {
+		return nil, err
+	}
+
+	maskedPayload, err := c.advanceBytes(payloadLength)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := applyMask(maskedPayload, maskingKey)
+
+	f := &frame{
+		fin:           fin,
+		rsv1:          rsv1,
+		rsv2:          rsv2,
+		rsv3:          rsv3,
+		opcode:        opcode,
+		mask:          mask,
+		payloadLength: payloadLength,
+		payload:       payload,
+	}
+
+	// Validate captured frame
+	if f.validate() != nil {
+		return nil, fmt.Errorf("frame validation failed: %w", err)
+	}
+
+	// If frame is a control frame process it separately
+	if opcode != OpText && opcode != OpBinary {
+		// TODO: process other control frames
+		switch opcode {
+		case OpClose:
+			statusCode := CloseStatusNoStatusReceived
+			reason := ""
+
+			if f.payloadLength > 0 {
+				statusCode = binary.BigEndian.Uint16(f.payload)
+				reason = string(f.payload[2:])
+			}
+
+			if err := c.handleClose(statusCode, reason); err != nil {
+				return nil, err
+			}
+
+			return nil, ErrConnectionClosed
+		}
+		return nil, nil
+	}
+
+	return f, nil
+}
+
+// handleClose sends the close frame to the client in order to finish
+// the close procedure.
+func (c *Conn) handleClose(statusCode uint16, reason string) error {
+	var buf []byte
+
+	if statusCode != CloseStatusNoStatusReceived {
+		buf = binary.BigEndian.AppendUint16(buf, statusCode)
+	}
+
+	if err := c.WriteMessage(OpClose, buf); err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
 	}
 
 	return nil
