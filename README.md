@@ -6,12 +6,11 @@ I've started this project out of curiosity how the WebSocket protocol is working
 
 ## Project status
 
-Current goal is to fully and correctly support upgrading and closing the connection and exchanging data in text format between client and the server (OpText).
+It looks like it could be used already. There is some restructuring required to make this blazingly fast, but before that I need to make sure it supports everything I want correctly.
 
-- Read RFC again and check if upgrading the connection works properly
-- Look into extensions and how they work (is it hard to support them?)
+- Understand available options for permessage-deflate and what they mean
 - Work on error handling, to report descriptive errors to api users
-- Write tests (how to even test things like that? Maybe it requires understanding how net.Conn is implemented?)
+- Write more tests (and test utils)
 
 ### Upgrading HTTP to WebSocket
 
@@ -28,8 +27,8 @@ Current goal is to fully and correctly support upgrading and closing the connect
 - [x] Decoding incoming frames (getting fin, rsv1, rsv2, rsv3, opcode, mask, etc.)
 - [x] Unmasking payload
 - [ ] Writing data to the client (add support for everything described in RFC)
-- [ ] Add support for different opcodes
-- [ ] Closing the connection (make sure that it works as expected)
+- [x] Add support for different opcodes
+- [x] Closing the connection (make sure that it works as expected)
 - [ ] Working with buffers (need to do more reaserch on that. How, when and if should I use them for reading / writing data)
 - [x] Fragmentation (only not fragmented frames are supported right now)
 
