@@ -22,6 +22,52 @@ func maskPayload(b []byte) ([]byte, []byte, error) {
 	return applyMask(b, maskingKey), maskingKey, nil
 }
 
+func TestPing(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+
+	ws := Conn{
+		conn:     server,
+		reader:   bufio.NewReaderSize(server, 1024),
+		writeBuf: make([]byte, 1024),
+	}
+	defer ws.Close()
+
+	payload := []byte("peepo")
+	maskedPayload, maskingKey, err := maskPayload(payload)
+	if err != nil {
+		t.Error("failed to prepare masked payload", err)
+	}
+
+	frame := []byte{0x80, 0x85}
+	frame[0] |= OpPing
+	frame = append(frame, maskingKey...)
+	frame = append(frame, maskedPayload...)
+
+	go func() {
+		if _, err := client.Write(frame); err != nil {
+			t.Error("failed to write to the WebSocket", err)
+		}
+	}()
+
+	go func() {
+		_, err = ws.nextFrame()
+		if err != nil {
+			t.Error("failed to read process ping message", err)
+		}
+	}()
+
+	received := make([]byte, 2+len(payload))
+
+	if _, err := client.Read(received); err != nil {
+		t.Error("failed to read pong message")
+	}
+
+	if !bytes.Equal(payload, received[2:]) {
+		t.Errorf("expected %s, got %s", payload, received[2:])
+	}
+}
+
 func TestReadUnfragmentedTextMessage(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
@@ -36,7 +82,7 @@ func TestReadUnfragmentedTextMessage(t *testing.T) {
 	payload := []byte("test")
 	maskedPayload, maskingKey, err := maskPayload(payload)
 	if err != nil {
-		t.Errorf("failed to prepare masked payload")
+		t.Error("failed to prepare masked payload", err)
 	}
 
 	frame := []byte{0x81, 0x84}

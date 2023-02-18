@@ -261,6 +261,8 @@ func (c *Conn) nextFrame() (*frame, error) {
 
 	payload := applyMask(maskedPayload, maskingKey)
 
+	fmt.Println(payload)
+
 	f := &frame{
 		fin:           fin,
 		rsv1:          rsv1,
@@ -279,8 +281,12 @@ func (c *Conn) nextFrame() (*frame, error) {
 
 	// If frame is a control frame process it separately
 	if opcode != OpText && opcode != OpBinary {
-		// TODO: process other control frames
 		switch opcode {
+		case OpPing:
+			if err := c.WriteMessage(OpPong, payload); err != nil {
+				return nil, err
+			}
+			return nil, nil
 		case OpClose:
 			statusCode := CloseStatusNoStatusReceived
 			reason := ""

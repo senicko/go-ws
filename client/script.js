@@ -12,6 +12,8 @@ socket.addEventListener("error", (event) => {
 socket.addEventListener("open", () => {
   console.log("event register");
 
+  socket.send("ping");
+
   button.addEventListener("click", () => {
     socket.send(input.value);
   });
