@@ -125,11 +125,9 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 	for {
 		f, err := c.nextFrame()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to read frame: %w", err)
 		}
-
-		if !f.fin {
-			buf = append(buf, f.payload...)
+		if f == nil {
 			continue
 		}
 
@@ -142,25 +140,44 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 			}
 		}
 
-		m := append(buf, f.payload...)
-
-		if compressed {
-			m, err = decompress(m)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decompress the message: %w", err)
-			}
+		if !f.fin {
+			buf = append(buf, f.payload...)
+			continue
 		}
 
-		return m, nil
+		buf = append(buf, f.payload...)
+		break
 	}
+
+	if !compressed {
+		return buf, nil
+	}
+
+	buf, err := decompress(buf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decompress the message: %w", err)
+	}
+
+	return buf, nil
 }
 
 // WriteMessage sends message to the client.
-func (c *Conn) WriteMessage(opcode uint8, payload []byte) error {
+func (c *Conn) WriteMessage(opcode uint8, m []byte) error {
 	frame := make([]byte, 2)
 	frame[0] |= opcode
 	frame[0] |= bitFin
-	payloadLen := len(payload)
+
+	if c.compression {
+		frame[0] |= bitRsv1
+
+		cm, err := compress(m)
+		if err != nil {
+			return fmt.Errorf("failed to compress: %w", err)
+		}
+		m = cm
+	}
+
+	payloadLen := len(m)
 
 	if payloadLen < 126 {
 		frame[1] |= byte(payloadLen)
@@ -172,9 +189,10 @@ func (c *Conn) WriteMessage(opcode uint8, payload []byte) error {
 		binary.BigEndian.PutUint64(frame, uint64(payloadLen))
 	}
 
-	frame = append(frame, payload...)
+	// TODO: We probably don't want to do that. Payload can be really huge.
+	// In fact do we want it to be a byte slice instead og io.Reader or something?
+	frame = append(frame, m...)
 
-	fmt.Printf("(write) opCode: %d, \n%08b\n", opcode, frame)
 	if _, err := c.conn.Write(frame); err != nil {
 		return fmt.Errorf("failed to write: %w", err)
 	}
@@ -187,7 +205,7 @@ func (c *Conn) advanceBytes(n uint64) ([]byte, error) {
 	b := make([]byte, n)
 
 	if _, err := io.ReadFull(c.reader, b); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read full: %w", err)
 	}
 
 	return b, nil

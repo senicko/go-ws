@@ -20,10 +20,11 @@ type Upgrader struct {
 	// CheckOrigin returns boolean indicating if the origin is acceptable by the server.
 	CheckOrigin func(r *http.Request) bool
 	Protocol    string
-
 	// RW buffer sizes
 	ReadBufferSize  int
 	WriteBufferSize int
+	// Negotiate permessage-deflate extension
+	Compress bool
 }
 
 // Upgrade upgrades the HTTP connection to use the WebSocket protocol.
@@ -77,9 +78,11 @@ func (u *Upgrader) Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error
 	// Negotiate extensions
 	compression := false
 
-	if _, ok := exts["permessage-deflate"]; ok {
-		resHeaders.Set("Sec-Websocket-Extensions", "permessage-deflate")
-		compression = true
+	if u.Compress {
+		if _, ok := exts["permessage-deflate"]; ok {
+			resHeaders.Set("Sec-Websocket-Extensions", "permessage-deflate; server_no_context_takeover; client_no_context_takeover")
+			compression = true
+		}
 	}
 
 	if protocol != "" {

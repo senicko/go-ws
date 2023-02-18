@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/senicko/go-ws/ws"
 )
@@ -13,16 +14,21 @@ import (
 func main() {
 	mux := http.NewServeMux()
 
-	upgrader := ws.Upgrader{}
+	upgrader := ws.Upgrader{
+		Compress: true,
+	}
+
+	clis := []*ws.Conn{}
 
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r)
 		defer conn.Close()
-
 		if err != nil {
 			log.Println(err)
 			return
 		}
+
+		clis = append(clis, conn)
 
 		for {
 			message, err := conn.ReadMessage()
@@ -31,10 +37,14 @@ func main() {
 				break
 			}
 
+			h, m, s := time.Now().Clock()
+			message = append([]byte(fmt.Sprintf("%d:%d:%d -> ", h, m, s)), message...)
 			fmt.Println(string(message))
 
-			if err := conn.WriteMessage(ws.OpText, message); err != nil {
-				fmt.Println("failed to send the message:", err)
+			for _, cli := range clis {
+				if err := cli.WriteMessage(ws.OpText, message); err != nil {
+					fmt.Println("failed to send the message:", err)
+				}
 			}
 		}
 	})
